@@ -1,48 +1,54 @@
- public class NonBlockingArrayList<T>{
+import java.util.concurrent.atomic.AtomicReferenceArray;
 
-        private volatile Object[] content = new Object[0];
-		
-        NonBlockingArrayList<T> add(int index, T item){
-          if (index < 0) {
-                  throw new IllegalArgumentException();                    
-									  
-			}
-			boolean needsModification = index > content.length - 1;
-			if(!needsModification){
-				if(item == null){
-					needsModification = content[index] != null;
-				}
-				else{
-					needsModification = item.equals(content[index]);
-				}
-			}
-			if(needsModification){
-				final Object[] renewed = Arrays.copyOf(content, Math.max(content.length, index + 1));
-				renewed[index] = item;
-				content = renewed;
-			}
-			return this;
+public class NonBlockingArrayList<T> {
+    private final AtomicReferenceArray<T> content;
+    private final int capacity;
+
+    public NonBlockingArrayList(int size) {
+        this.capacity = size;
+        this.content = new AtomicReferenceArray<>(size);
+    }
+
+    public boolean add(int index, T item) {
+        if (index < 0 || index >= capacity) {
+            throw new IndexOutOfBoundsException();
         }
-		NonBlockingArrayList<T> remove(int index){
-			if(index < 0 || index >= content.length){
-				throw new IllegalArgumentException();
-			}
-			int size = content.length - 1;
-			final Object[] renewed = new Object[size];
-			System.arraycopy(content, index + 1, renewed, index, size-index);
-			content = renewed;
-			return this;
-		}
-		T get (int index){
-			return (T)content[index];
-		}
-		int size(){
-			return content.length;
-		}
+        return content.compareAndSet(index, null, item);
+    }
 
-
-        NonBlockingArrayList<T> add(T item){
-          return add(content.length, item);
+    public boolean remove(int index) {
+        if (index < 0 || index >= capacity) {
+            throw new IndexOutOfBoundsException();
         }
+        return content.compareAndSet(index, content.get(index), null);
+    }
 
+    public T get(int index) {
+        if (index < 0 || index >= capacity) {
+            throw new IndexOutOfBoundsException();
+        }
+        return content.get(index);
+    }
+
+    public int size() {
+        int count = 0;
+        for (int i = 0; i < capacity; i++) {
+            if (content.get(i) != null) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < capacity; i++) {
+            if (content.get(i) != null) {
+                sb.append(content.get(i)).append(", ");
+            }
+        }
+        if (sb.length() > 1) sb.setLength(sb.length() - 2);
+        return sb.append("]").toString();
+    }
 }
