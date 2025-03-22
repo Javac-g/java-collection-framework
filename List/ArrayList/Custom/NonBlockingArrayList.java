@@ -49,6 +49,6 @@ public class NonBlockingArrayList<T> {
             }
         }
         if (sb.length() > 1) sb.setLength(sb.length() - 2);
-        return sb.append("]").toString();
+        return sb.append("]").toString(); //consider String.formet
     }
 }
