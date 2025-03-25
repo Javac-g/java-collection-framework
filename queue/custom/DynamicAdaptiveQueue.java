@@ -1,7 +1,7 @@
 import java.util.concurrent.atomic.*;
 import java.util.concurrent.locks.*;
 
-public class DynamicAdaptiveQueue<T> {
+public class OptimizedDynamicQueue<T> {
     private final AtomicReferenceArray<T> content;
     private final int capacity;
 
@@ -9,19 +9,17 @@ public class DynamicAdaptiveQueue<T> {
     private final AtomicInteger out = new AtomicInteger(0);
     private final AtomicInteger in = new AtomicInteger(0);
 
-    private final ReentrantLock putLock = new ReentrantLock();
-    private final ReentrantLock getLock = new ReentrantLock();
-    private final Condition notEmpty = getLock.newCondition();
-    private final Condition notFull = putLock.newCondition();
+    private final StampedLock putLock = new StampedLock();
+    private final StampedLock getLock = new StampedLock();
+    private final LongAdder contentionCount = new LongAdder();
 
-    private volatile boolean lockFreeMode = true;  // 🔄 Dynamic Mode
-    private final AtomicInteger contentionCount = new AtomicInteger(0);
+    private volatile boolean lockFreeMode = true;
 
-    public DynamicAdaptiveQueue(int capacity) {
+    public OptimizedDynamicQueue(int capacity) {
         if (capacity <= 0) throw new IllegalArgumentException("Capacity must be > 0");
         this.capacity = capacity;
         this.content = new AtomicReferenceArray<>(capacity);
-        new Thread(this::monitorContention).start(); // 🔄 Background Auto-Switching
+        new Thread(this::monitorContention).start();
     }
 
     /** 🔹 Adaptive Get **/
@@ -45,7 +43,7 @@ public class DynamicAdaptiveQueue<T> {
                 return (T) content.get(index);
             }
         }
-        contentionCount.incrementAndGet();
+        contentionCount.increment();
         return null;
     }
 
@@ -59,54 +57,50 @@ public class DynamicAdaptiveQueue<T> {
                 return true;
             }
         }
-        contentionCount.incrementAndGet();
+        contentionCount.increment();
         return false;
     }
 
     /** 🔹 LOCK-BASED GET **/
     @SuppressWarnings("unchecked")
     private T getLockBased() throws InterruptedException {
-        getLock.lock();
+        long stamp = getLock.writeLock();
         try {
-            while (size.get() == 0) notEmpty.await();
+            while (size.get() == 0) Thread.yield();
             T value = (T) content.getAndSet(out.get(), null);
             out.set((out.get() + 1) % capacity);
             size.decrementAndGet();
-            putLock.lock();
-            try { notFull.signal(); } finally { putLock.unlock(); }
             return value;
         } finally {
-            getLock.unlock();
+            getLock.unlockWrite(stamp);
         }
     }
 
     /** 🔹 LOCK-BASED PUT **/
     private boolean putLockBased(T value) throws InterruptedException {
-        putLock.lock();
+        long stamp = putLock.writeLock();
         try {
-            while (size.get() == capacity) notFull.await();
+            while (size.get() == capacity) Thread.yield();
             content.set(in.get(), value);
             in.set((in.get() + 1) % capacity);
             size.incrementAndGet();
-            getLock.lock();
-            try { notEmpty.signal(); } finally { getLock.unlock(); }
             return true;
         } finally {
-            putLock.unlock();
+            putLock.unlockWrite(stamp);
         }
     }
 
-    /** 🔹 Auto-Switch Between Modes **/
+    /** 🔹 Faster Auto-Switch **/
     private void monitorContention() {
         while (true) {
             try {
-                Thread.sleep(1000);
-                int count = contentionCount.getAndSet(0);
-                if (count > 10 && lockFreeMode) {
-                    lockFreeMode = false;  // 🔄 Too much contention, switch to lock-based
-                } else if (count == 0 && !lockFreeMode) {
-                    lockFreeMode = true;  // 🔄 No contention, revert to lock-free
+                Thread.sleep(500);  // Check contention every 500ms
+                if (contentionCount.sum() > 5 && lockFreeMode) {
+                    lockFreeMode = false;
+                } else if (contentionCount.sum() == 0 && !lockFreeMode) {
+                    lockFreeMode = true;
                 }
+                contentionCount.reset();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
