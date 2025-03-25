@@ -1,23 +1,23 @@
 import java.util.concurrent.atomic.*;
 import java.util.concurrent.locks.LockSupport;
 
-public class NUMAQueue<T> {
-    private static final int SEGMENT_SIZE = 64;  // Avoid false sharing
+public class UltraFastQueue<T> {
+    private static final int SEGMENT_SIZE = 64;  // Prevents false sharing
     private final AtomicReferenceArray<T> buffer;
     private final int capacity;
 
     private final AtomicLong head = new AtomicLong(0);
     private final AtomicLong tail = new AtomicLong(0);
-    
-    private static final int SPIN_TRIES = 10; // Adaptive spinning before yielding
 
-    public NUMAQueue(int capacity) {
+    private static final int SPIN_TRIES = 16; // Adaptive spinning before yielding
+
+    public UltraFastQueue(int capacity) {
         if (capacity <= 0) throw new IllegalArgumentException("Capacity must be > 0");
         this.capacity = capacity;
         this.buffer = new AtomicReferenceArray<>(capacity);
     }
 
-    /** 🔹 Lock-Free Put (Non-Blocking) */
+    /** 🔥 **Lock-Free Put (Non-Blocking)** */
     public boolean put(T value) {
         long currentTail;
         int spins = 0;
@@ -25,8 +25,8 @@ public class NUMAQueue<T> {
             currentTail = tail.get();
             if (currentTail - head.get() >= capacity) return false; // Queue full
 
-            if (spins++ < SPIN_TRIES) Thread.onSpinWait(); // Light spinning
-            else LockSupport.parkNanos(1); // Yield to prevent excessive CPU usage
+            if (spins++ < SPIN_TRIES) Thread.onSpinWait();
+            else LockSupport.parkNanos(1); // Yield if necessary
 
         } while (!tail.compareAndSet(currentTail, currentTail + 1));
 
@@ -34,7 +34,7 @@ public class NUMAQueue<T> {
         return true;
     }
 
-    /** 🔹 Lock-Free Get (Non-Blocking) */
+    /** 🔥 **Lock-Free Get (Non-Blocking)** */
     public T get() {
         long currentHead;
         T value;
