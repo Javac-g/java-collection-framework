@@ -1,114 +1,54 @@
 import java.util.concurrent.atomic.*;
-import java.util.concurrent.locks.*;
+import java.util.concurrent.locks.LockSupport;
 
-public class UltraOptimizedQueue<T> {
-    private final AtomicReferenceArray<T> content;
+public class NUMAQueue<T> {
+    private static final int SEGMENT_SIZE = 64;  // Avoid false sharing
+    private final AtomicReferenceArray<T> buffer;
     private final int capacity;
+
+    private final AtomicLong head = new AtomicLong(0);
+    private final AtomicLong tail = new AtomicLong(0);
     
-    private final AtomicInteger size = new AtomicInteger(0);
-    private final AtomicInteger out = new AtomicInteger(0);
-    private final AtomicInteger in = new AtomicInteger(0);
+    private static final int SPIN_TRIES = 10; // Adaptive spinning before yielding
 
-    private final StampedLock putLock = new StampedLock();
-    private final StampedLock getLock = new StampedLock();
-    private final LongAdder contentionCount = new LongAdder();
-
-    private volatile boolean lockFreeMode = true;
-
-    public UltraOptimizedQueue(int capacity) {
+    public NUMAQueue(int capacity) {
         if (capacity <= 0) throw new IllegalArgumentException("Capacity must be > 0");
         this.capacity = capacity;
-        this.content = new AtomicReferenceArray<>(capacity);
-        new Thread(this::monitorContention).start();
+        this.buffer = new AtomicReferenceArray<>(capacity);
     }
 
-    /** 🔹 Adaptive Get **/
-    public T get() throws InterruptedException {
-        return lockFreeMode ? getLockFree() : getLockBased();
+    /** 🔹 Lock-Free Put (Non-Blocking) */
+    public boolean put(T value) {
+        long currentTail;
+        int spins = 0;
+        do {
+            currentTail = tail.get();
+            if (currentTail - head.get() >= capacity) return false; // Queue full
+
+            if (spins++ < SPIN_TRIES) Thread.onSpinWait(); // Light spinning
+            else LockSupport.parkNanos(1); // Yield to prevent excessive CPU usage
+
+        } while (!tail.compareAndSet(currentTail, currentTail + 1));
+
+        buffer.set((int) (currentTail % capacity), value);
+        return true;
     }
 
-    /** 🔹 Adaptive Put **/
-    public boolean put(T value) throws InterruptedException {
-        return lockFreeMode ? putLockFree(value) : putLockBased(value);
-    }
+    /** 🔹 Lock-Free Get (Non-Blocking) */
+    public T get() {
+        long currentHead;
+        T value;
+        int spins = 0;
+        do {
+            currentHead = head.get();
+            if (currentHead >= tail.get()) return null; // Queue empty
 
-    /** 🔹 LOCK-FREE GET **/
-    @SuppressWarnings("unchecked")
-    private T getLockFree() {
-        int tries = 0;
-        while (size.get() > 0) {
-            int index = out.get();
-            T value = content.get(index);
-            if (value != null && content.compareAndSet(index, value, null)) {
-                out.set((index + 1) % capacity);
-                size.decrementAndGet();
-                return value;
-            }
-            if (++tries > 10) Thread.yield(); // Adaptive backoff
-        }
-        contentionCount.increment();
-        return null;
-    }
+            if (spins++ < SPIN_TRIES) Thread.onSpinWait();
+            else LockSupport.parkNanos(1);
 
-    /** 🔹 LOCK-FREE PUT **/
-    private boolean putLockFree(T value) {
-        int tries = 0;
-        while (size.get() < capacity) {
-            int index = in.get();
-            if (content.compareAndSet(index, null, value)) {
-                in.set((index + 1) % capacity);
-                size.incrementAndGet();
-                return true;
-            }
-            if (++tries > 10) Thread.yield(); // Adaptive backoff
-        }
-        contentionCount.increment();
-        return false;
-    }
+            value = buffer.get((int) (currentHead % capacity));
+        } while (!head.compareAndSet(currentHead, currentHead + 1));
 
-    /** 🔹 LOCK-BASED GET (Batch Processing) **/
-    @SuppressWarnings("unchecked")
-    private T getLockBased() throws InterruptedException {
-        long stamp = getLock.writeLock();
-        try {
-            while (size.get() == 0) Thread.yield();
-            T value = (T) content.getAndSet(out.get(), null);
-            out.set((out.get() + 1) % capacity);
-            size.decrementAndGet();
-            return value;
-        } finally {
-            getLock.unlockWrite(stamp);
-        }
-    }
-
-    /** 🔹 LOCK-BASED PUT (Batch Processing) **/
-    private boolean putLockBased(T value) throws InterruptedException {
-        long stamp = putLock.writeLock();
-        try {
-            while (size.get() == capacity) Thread.yield();
-            content.set(in.get(), value);
-            in.set((in.get() + 1) % capacity);
-            size.incrementAndGet();
-            return true;
-        } finally {
-            putLock.unlockWrite(stamp);
-        }
-    }
-
-    /** 🔹 Faster Auto-Switch **/
-    private void monitorContention() {
-        while (true) {
-            try {
-                Thread.sleep(500);  // Check contention every 500ms
-                if (contentionCount.sum() > 5 && lockFreeMode) {
-                    lockFreeMode = false;
-                } else if (contentionCount.sum() == 0 && !lockFreeMode) {
-                    lockFreeMode = true;
-                }
-                contentionCount.reset();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }
+        return value;
     }
 }
