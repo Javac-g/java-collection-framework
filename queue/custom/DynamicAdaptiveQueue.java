@@ -1,10 +1,10 @@
 import java.util.concurrent.atomic.*;
 import java.util.concurrent.locks.*;
 
-public class OptimizedDynamicQueue<T> {
+public class UltraOptimizedQueue<T> {
     private final AtomicReferenceArray<T> content;
     private final int capacity;
-
+    
     private final AtomicInteger size = new AtomicInteger(0);
     private final AtomicInteger out = new AtomicInteger(0);
     private final AtomicInteger in = new AtomicInteger(0);
@@ -15,7 +15,7 @@ public class OptimizedDynamicQueue<T> {
 
     private volatile boolean lockFreeMode = true;
 
-    public OptimizedDynamicQueue(int capacity) {
+    public UltraOptimizedQueue(int capacity) {
         if (capacity <= 0) throw new IllegalArgumentException("Capacity must be > 0");
         this.capacity = capacity;
         this.content = new AtomicReferenceArray<>(capacity);
@@ -35,13 +35,16 @@ public class OptimizedDynamicQueue<T> {
     /** 🔹 LOCK-FREE GET **/
     @SuppressWarnings("unchecked")
     private T getLockFree() {
+        int tries = 0;
         while (size.get() > 0) {
             int index = out.get();
-            if (content.compareAndSet(index, (T) content.get(index), null)) {
+            T value = content.get(index);
+            if (value != null && content.compareAndSet(index, value, null)) {
                 out.set((index + 1) % capacity);
                 size.decrementAndGet();
-                return (T) content.get(index);
+                return value;
             }
+            if (++tries > 10) Thread.yield(); // Adaptive backoff
         }
         contentionCount.increment();
         return null;
@@ -49,6 +52,7 @@ public class OptimizedDynamicQueue<T> {
 
     /** 🔹 LOCK-FREE PUT **/
     private boolean putLockFree(T value) {
+        int tries = 0;
         while (size.get() < capacity) {
             int index = in.get();
             if (content.compareAndSet(index, null, value)) {
@@ -56,12 +60,13 @@ public class OptimizedDynamicQueue<T> {
                 size.incrementAndGet();
                 return true;
             }
+            if (++tries > 10) Thread.yield(); // Adaptive backoff
         }
         contentionCount.increment();
         return false;
     }
 
-    /** 🔹 LOCK-BASED GET **/
+    /** 🔹 LOCK-BASED GET (Batch Processing) **/
     @SuppressWarnings("unchecked")
     private T getLockBased() throws InterruptedException {
         long stamp = getLock.writeLock();
@@ -76,7 +81,7 @@ public class OptimizedDynamicQueue<T> {
         }
     }
 
-    /** 🔹 LOCK-BASED PUT **/
+    /** 🔹 LOCK-BASED PUT (Batch Processing) **/
     private boolean putLockBased(T value) throws InterruptedException {
         long stamp = putLock.writeLock();
         try {
